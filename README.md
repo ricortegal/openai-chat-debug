@@ -1,4 +1,4 @@
-# Model Lab
+# OpenIA Chat Debug
 
 Chat web local para probar modelos y proveedores compatibles con el endpoint de OpenAI `POST /chat/completions`. La aplicación permite cambiar el proveedor, el identificador del modelo y los parámetros de generación sin tocar el código.
 
