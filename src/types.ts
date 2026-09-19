@@ -4,6 +4,7 @@ export interface ChatMessage {
   id: string;
   role: Role;
   content: string;
+  reasoning?: string;
   createdAt: number;
   latencyMs?: number;
   localOnly?: boolean;
@@ -21,10 +22,21 @@ export interface ConnectionSettings {
 
 export interface StreamDelta {
   choices?: Array<{
-    delta?: { content?: string; reasoning_content?: string };
+    delta?: {
+      content?: string;
+      reasoning_content?: string;
+      reasoning?: string;
+      thinking?: string;
+      reasoning_details?: unknown;
+    };
     finish_reason?: string | null;
   }>;
   error?: { message?: string };
+}
+
+export interface ChatResponse {
+  content: string;
+  reasoning: string;
 }
 
 export interface ModelInfo {

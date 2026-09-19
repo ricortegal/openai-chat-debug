@@ -121,10 +121,10 @@ export default function App() {
         settings,
         messages: history,
         signal: controller.signal,
-        onDelta: (text) => setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: text } : message)),
+        onDelta: (response) => setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, ...response } : message)),
         onProtocol: updateProtocol,
       });
-      setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, content: complete, latencyMs: performance.now() - startedAt } : message));
+      setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, ...complete, latencyMs: performance.now() - startedAt } : message));
     } catch (cause) {
       if (controller.signal.aborted) {
         setMessages((current) => current.map((message) => message.id === assistantId ? { ...message, latencyMs: performance.now() - startedAt } : message));

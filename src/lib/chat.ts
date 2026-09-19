@@ -1,10 +1,10 @@
-import type { ChatMessage, ConnectionSettings, ProtocolExchange, ProtocolUpdate, StreamDelta } from '../types';
+import type { ChatMessage, ChatResponse, ConnectionSettings, ProtocolExchange, ProtocolUpdate, StreamDelta } from '../types';
 
 interface SendChatOptions {
   settings: ConnectionSettings;
   messages: ChatMessage[];
   signal: AbortSignal;
-  onDelta: (text: string) => void;
+  onDelta: (response: ChatResponse) => void;
   onProtocol: (update: ProtocolUpdate) => void;
 }
 
@@ -27,32 +27,91 @@ function getErrorMessage(body: unknown, status: number): string {
   return `El proveedor respondió con un error HTTP ${status}.`;
 }
 
-function parseSseBlock(block: string): string {
+function reasoningDetailsToText(details: unknown): string {
+  if (typeof details === 'string') return details;
+  if (!Array.isArray(details)) return '';
+
+  return details.flatMap((detail) => {
+    if (typeof detail === 'string') return [detail];
+    if (!detail || typeof detail !== 'object') return [];
+    const item = detail as { text?: unknown; content?: unknown; summary?: unknown };
+    for (const value of [item.text, item.content, item.summary]) {
+      if (typeof value === 'string') return [value];
+    }
+    return [];
+  }).join('\n');
+}
+
+function getReasoningPart(value: {
+  reasoning_content?: unknown;
+  reasoning?: unknown;
+  thinking?: unknown;
+  reasoning_details?: unknown;
+} | undefined): string {
+  if (!value) return '';
+  for (const candidate of [value.reasoning_content, value.reasoning, value.thinking]) {
+    if (typeof candidate === 'string') return candidate;
+  }
+  return reasoningDetailsToText(value.reasoning_details);
+}
+
+function extractTaggedReasoning(rawContent: string): ChatResponse {
+  const reasoning: string[] = [];
+  const tagPattern = /<(think|thinking|reasoning)>\s*([\s\S]*?)\s*<\/\1>/gi;
+  let content = rawContent.replace(tagPattern, (_match, _tag: string, value: string) => {
+    if (value.trim()) reasoning.push(value.trim());
+    return '';
+  });
+
+  // Durante el streaming puede existir una etiqueta de apertura aún sin cerrar.
+  const openTag = /<(think|thinking|reasoning)>/i.exec(content);
+  if (openTag) {
+    const pending = content.slice(openTag.index + openTag[0].length).trim();
+    if (pending) reasoning.push(pending);
+    content = content.slice(0, openTag.index);
+  }
+
+  return { content: content.trimStart(), reasoning: reasoning.join('\n\n') };
+}
+
+function combineResponse(rawContent: string, structuredReasoning: string): ChatResponse {
+  const tagged = extractTaggedReasoning(rawContent);
+  const parts = [structuredReasoning.trim(), tagged.reasoning.trim()].filter(Boolean);
+  const reasoning = parts.length === 2 && parts[0] === parts[1] ? parts[0] : parts.join('\n\n');
+  return { content: tagged.content, reasoning };
+}
+
+function parseSseBlock(block: string): ChatResponse {
   const dataLines = block
     .split('\n')
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trimStart());
 
-  if (!dataLines.length) return '';
+  if (!dataLines.length) return { content: '', reasoning: '' };
   const raw = dataLines.join('\n').trim();
-  if (!raw || raw === '[DONE]') return '';
+  if (!raw || raw === '[DONE]') return { content: '', reasoning: '' };
 
   const event = JSON.parse(raw) as StreamDelta;
   if (event.error?.message) throw new Error(event.error.message);
-  return event.choices?.[0]?.delta?.content ?? '';
+  const delta = event.choices?.[0]?.delta;
+  return {
+    content: typeof delta?.content === 'string' ? delta.content : '',
+    reasoning: getReasoningPart(delta),
+  };
 }
 
 async function consumeStream(
   response: Response,
-  onDelta: (text: string) => void,
+  onDelta: (response: ChatResponse) => void,
   onChunk: (chunk: string) => void,
-): Promise<string> {
+): Promise<ChatResponse> {
   if (!response.body) throw new Error('El proveedor no devolvió un flujo de datos.');
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let complete = '';
+  let completeContent = '';
+  let completeReasoning = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -64,9 +123,10 @@ async function consumeStream(
 
     for (const block of blocks) {
       const delta = parseSseBlock(block);
-      if (delta) {
-        complete += delta;
-        onDelta(complete);
+      if (delta.content || delta.reasoning) {
+        completeContent += delta.content;
+        completeReasoning += delta.reasoning;
+        onDelta(combineResponse(completeContent, completeReasoning));
       }
     }
     if (done) break;
@@ -74,13 +134,14 @@ async function consumeStream(
 
   if (buffer.trim()) {
     const delta = parseSseBlock(buffer);
-    complete += delta;
-    if (delta) onDelta(complete);
+    completeContent += delta.content;
+    completeReasoning += delta.reasoning;
+    if (delta.content || delta.reasoning) onDelta(combineResponse(completeContent, completeReasoning));
   }
-  return complete;
+  return combineResponse(completeContent, completeReasoning);
 }
 
-export async function sendChat({ settings, messages, signal, onDelta, onProtocol }: SendChatOptions): Promise<string> {
+export async function sendChat({ settings, messages, signal, onDelta, onProtocol }: SendChatOptions): Promise<ChatResponse> {
   const payload = {
     model: settings.model.trim(),
     messages: cleanMessages(messages, settings.systemPrompt),
@@ -144,10 +205,18 @@ export async function sendChat({ settings, messages, signal, onDelta, onProtocol
   const raw = await response.text();
   onProtocol({ type: 'chunk', id: exchangeId, chunk: raw });
   const body = JSON.parse(raw) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{ message?: {
+      content?: string;
+      reasoning_content?: string;
+      reasoning?: string;
+      thinking?: string;
+      reasoning_details?: unknown;
+    } }>;
   };
-  const content = body.choices?.[0]?.message?.content;
+  const message = body.choices?.[0]?.message;
+  const content = message?.content;
   if (typeof content !== 'string') throw new Error('La respuesta no contiene un mensaje de asistente válido.');
-  onDelta(content);
-  return content;
+  const complete = combineResponse(content, getReasoningPart(message));
+  onDelta(complete);
+  return complete;
 }

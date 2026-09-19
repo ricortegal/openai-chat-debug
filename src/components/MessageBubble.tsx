@@ -28,10 +28,24 @@ export function MessageBubble({ message, isStreaming }: MessageBubbleProps) {
           <span>{formatTime(message.createdAt)}</span>
           {message.latencyMs !== undefined && <span>· {(message.latencyMs / 1000).toFixed(1)} s</span>}
         </div>
+        {isAssistant && message.reasoning && (
+          <details className="reasoning-block" open={isStreaming}>
+            <summary>
+              <span className="reasoning-chevron" aria-hidden="true">›</span>
+              <strong>Razonamiento</strong>
+              <span className="reasoning-status">
+                {isStreaming ? 'generando…' : <><span className="reasoning-show">mostrar</span><span className="reasoning-hide">ocultar</span></>}
+              </span>
+            </summary>
+            <div className="reasoning-content">
+              <MarkdownContent content={message.reasoning} />
+            </div>
+          </details>
+        )}
         <div className="message-content">
           {message.content
             ? (isAssistant ? <MarkdownContent content={message.content} /> : message.content)
-            : (isStreaming ? <span className="typing"><i /><i /><i /></span> : '')}
+            : (isStreaming && !message.reasoning ? <span className="typing"><i /><i /><i /></span> : '')}
           {isStreaming && message.content && <span className="cursor" />}
         </div>
         {isAssistant && message.content && !isStreaming && (
